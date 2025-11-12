@@ -56,6 +56,12 @@ app.post("/api/verify-payment", (req, res) => {
   }
 });
 
+app.get('/', (req, res) => {
+  res.send('Server is running successfully at aipune.skta.in 🚀');
+});
+
+
 // Start the server
 const PORT = 3000;
 app.listen(PORT, () => console.log(`✅ Server running at http://localhost:${PORT}`));
+
