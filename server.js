@@ -1,37 +1,53 @@
+// server.js (fixed)
 const express = require("express");
 const Razorpay = require("razorpay");
-const bodyParser = require("body-parser");
 const crypto = require("crypto");
 const path = require("path");
+const cors = require("cors");
 
 const app = express();
-app.use(bodyParser.json());
 
-// Serve static files (HTML, CSS, JS) from /public folder
-app.use(express.static("public"));
+// Parse JSON
+app.use(express.json());
 
-// Razorpay configuration
-const RAZORPAY_KEY_ID = " rzp_live_ReiQmXsvV4tBpc"; // or test key for testing
-const RAZORPAY_KEY_SECRET = "zcItOjvUm2OyetCdznqafF1N"; // replace this
+// Allow CORS from your frontend origin (adjust if needed)
+app.use(cors({
+  origin: [ "https://aipune.skta.in", "https://www.aipune.skta.in" ], // add other origins if needed
+  methods: ["GET","POST","OPTIONS"]
+}));
 
+// Serve static files from ./public if you want to host frontend from this service
+app.use(express.static(path.join(__dirname, "public")));
+
+// IMPORTANT: load keys from environment (do NOT hardcode)
+const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
+const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
+
+if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
+  console.warn("WARNING: Razorpay keys are not set in environment variables.");
+}
+
+// Initialize Razorpay client
 const razorpay = new Razorpay({
-  key_id: RAZORPAY_KEY_ID,
-  key_secret: RAZORPAY_KEY_SECRET,
+  key_id: RAZORPAY_KEY_ID || "",
+  key_secret: RAZORPAY_KEY_SECRET || ""
 });
 
 // Create order API
 app.post("/api/create-order", async (req, res) => {
   try {
+    const amount = Number(req.body.amount || 99900); // paise
     const options = {
-      amount: 99900, // amount in paise (₹999)
+      amount,
       currency: "INR",
-      receipt: "rcpt_" + Date.now(),
+      receipt: req.body.receipt || "rcpt_" + Date.now()
     };
+
     const order = await razorpay.orders.create(options);
-    res.json({ orderId: order.id });
+    return res.json({ orderId: order.id, order });
   } catch (err) {
     console.error("Order creation failed:", err);
-    res.status(500).send("Error creating order");
+    return res.status(500).json({ error: String(err.message || err) });
   }
 });
 
@@ -39,29 +55,33 @@ app.post("/api/create-order", async (req, res) => {
 app.post("/api/verify-payment", (req, res) => {
   try {
     const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
-    const sign = razorpay_order_id + "|" + razorpay_payment_id;
+
+    if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, error: "Missing required fields" });
+    }
+
+    const sign = `${razorpay_order_id}|${razorpay_payment_id}`;
     const expectedSign = crypto
-      .createHmac("sha256", RAZORPAY_KEY_SECRET)
+      .createHmac("sha256", RAZORPAY_KEY_SECRET || "")
       .update(sign.toString())
       .digest("hex");
 
     if (razorpay_signature === expectedSign) {
-      res.json({ success: true });
+      return res.json({ success: true });
     } else {
-      res.status(400).json({ success: false });
+      return res.status(400).json({ success: false, error: "Invalid signature" });
     }
   } catch (error) {
     console.error("Payment verification failed:", error);
-    res.status(500).send("Error verifying payment");
+    return res.status(500).json({ success: false, error: String(error) });
   }
 });
 
-app.get('/', (req, res) => {
-  res.send('Server is running successfully at aipune.skta.in 🚀');
+// Root route (show friendly message)
+app.get("/", (req, res) => {
+  res.send("Server is running successfully at aipune.skta.in 🚀");
 });
 
-
-// Start the server
-const PORT = 3000;
-app.listen(PORT, () => console.log(`✅ Server running at http://localhost:${PORT}`));
-
+// Start server (use env PORT for Render)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
