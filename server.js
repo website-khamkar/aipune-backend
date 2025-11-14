@@ -1,4 +1,10 @@
-// --- DEBUG: mask and show presence of Razorpay env vars (safe; does NOT print secret) ---
+// server.js (updated)
+/*
+  - Adds CORS support so the browser can call /api/create-order from your front-end
+  - Keeps your debug masking for Razorpay env vars
+  - Uses process.env.PORT for Render
+*/
+
 function mask(s){
   if(!s) return '<MISSING>';
   const t = String(s);
@@ -17,9 +23,36 @@ const Razorpay = require("razorpay");
 const bodyParser = require("body-parser");
 const crypto = require("crypto");
 const path = require("path");
+const cors = require("cors");
 
 const app = express();
+
+// parse JSON (body-parser is fine; keeping your usage)
 app.use(bodyParser.json());
+
+// ---------- CORS setup ----------
+// Allow a specific origin (recommended) or set FRONTEND_ORIGIN env var.
+// Default to your known front-end domain as fallback.
+const FRONTEND_ORIGIN = (process.env.FRONTEND_ORIGIN || "https://aipune.skta.in").trim();
+
+// Configure CORS to accept requests from the frontend and allow credentials if needed.
+app.use(cors({
+  origin: FRONTEND_ORIGIN,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 204
+}));
+
+// Handle preflight for all routes explicitly (helps some proxies)
+app.options('*', cors({
+  origin: FRONTEND_ORIGIN,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true,
+  optionsSuccessStatus: 204
+}));
 
 // Serve static files (HTML, CSS, JS) from /public folder
 app.use(express.static("public"));
@@ -30,7 +63,7 @@ const RAZORPAY_KEY_SECRET = (process.env.RAZORPAY_KEY_SECRET || '').trim();
 
 if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
   console.error('FATAL: Razorpay credentials missing. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in env vars.');
-  // optionally continue so logs show the masked values you added earlier
+  // We continue so logs show debug info, but orders will fail until creds are set.
 }
 
 // initialize client
@@ -39,11 +72,10 @@ const razorpay = new Razorpay({
   key_secret: RAZORPAY_KEY_SECRET,
 });
 
-
 // Create order API
 app.post("/api/create-order", async (req, res) => {
   try {
-    const { amount, currency, receipt } = req.body;
+    const { amount, currency, receipt } = req.body || {};
     const options = {
       amount: amount || 99900,
       currency: currency || "INR",
@@ -53,25 +85,28 @@ app.post("/api/create-order", async (req, res) => {
     const order = await razorpay.orders.create(options);
     console.log("✅ Order created:", order.id);
 
-    // Return both the public key id (for client) and the order object
-    // IMPORTANT: do NOT return the secret key to the client.
+    // Return order + public key id (do NOT return secret)
     res.json({
       success: true,
-      order: order,                   // full Razorpay order object (id, amount, currency...)
-      keyId: process.env.RAZORPAY_KEY_ID || RAZORPAY_KEY_ID
+      order: order,
+      keyId: RAZORPAY_KEY_ID
     });
 
   } catch (err) {
-    console.error("❌ Razorpay error:", err);
-    res.status(500).json({ error: err.message || "Unknown error" });
+    console.error("❌ Razorpay error:", err && err.error ? err.error : err);
+    // if Razorpay returns structured error it may be in err.error; send minimal message
+    const msg = (err && err.message) ? err.message : 'Unknown error creating order';
+    res.status(500).json({ error: msg });
   }
 });
-
 
 // Verify payment API
 app.post("/api/verify-payment", (req, res) => {
   try {
-    const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body;
+    const { razorpay_payment_id, razorpay_order_id, razorpay_signature } = req.body || {};
+    if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature) {
+      return res.status(400).json({ success: false, error: 'Missing verification parameters' });
+    }
     const sign = razorpay_order_id + "|" + razorpay_payment_id;
     const expectedSign = crypto
       .createHmac("sha256", RAZORPAY_KEY_SECRET)
@@ -90,15 +125,10 @@ app.post("/api/verify-payment", (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.redirect('https://your-frontend-domain.com');
+  // keep this, or change to your frontend domain path if needed
+  res.redirect('https://aipune.skta.in');
 });
 
-// Start the server
+// Start the server with the port provided by Render (or fallback)
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Server running at http://localhost:${PORT}`));
-
-// ----------------- IMPORTANT CORS / OPTIONS NOTE -----------------
-// If your code had a line like `app.options("*", cors());` that caused the
-// path-to-regexp error during deployment. If you need a global preflight
-// handler, use "/*" instead of "*" (see discussion/logs).
-// ----------------------------------------------------------------
+app.listen(PORT, () => console.log(`✅ Server running at http://localhost:${PORT} (PORT=${PORT}), FRONTEND_ORIGIN=${FRONTEND_ORIGIN}`));
