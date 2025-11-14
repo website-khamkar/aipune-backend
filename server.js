@@ -1,8 +1,10 @@
-// server.js (updated)
+// server.js (fixed preflight handling; no app.options('*', cors(...)) call)
+
 /*
-  - Adds CORS support so the browser can call /api/create-order from your front-end
   - Keeps your debug masking for Razorpay env vars
-  - Uses process.env.PORT for Render
+  - Uses CORs via app.use(cors(...))
+  - Avoids calling app.options('*', cors(...)) which caused PathError in Render
+  - Returns order + keyId and verifies payment
 */
 
 function mask(s){
@@ -27,32 +29,26 @@ const cors = require("cors");
 
 const app = express();
 
-// parse JSON (body-parser is fine; keeping your usage)
+// parse JSON bodies
 app.use(bodyParser.json());
 
 // ---------- CORS setup ----------
-// Allow a specific origin (recommended) or set FRONTEND_ORIGIN env var.
-// Default to your known front-end domain as fallback.
+// Allow a specific origin (recommended). Set FRONTEND_ORIGIN in Render env vars if different.
 const FRONTEND_ORIGIN = (process.env.FRONTEND_ORIGIN || "https://aipune.skta.in").trim();
 
-// Configure CORS to accept requests from the frontend and allow credentials if needed.
 app.use(cors({
   origin: FRONTEND_ORIGIN,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  methods: ['GET','POST','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization','X-Requested-With','Accept','Origin'],
   credentials: true,
-  preflightContinue: false,
   optionsSuccessStatus: 204
 }));
 
-// Handle preflight for all routes explicitly (helps some proxies)
-app.options('*', cors({
-  origin: FRONTEND_ORIGIN,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true,
-  optionsSuccessStatus: 204
-}));
+// Lightweight explicit preflight responder (avoids using '*' route pattern)
+app.options('*', (req, res) => {
+  // Note: CORS middleware has already added appropriate headers
+  res.sendStatus(204);
+});
 
 // Serve static files (HTML, CSS, JS) from /public folder
 app.use(express.static("public"));
@@ -63,7 +59,7 @@ const RAZORPAY_KEY_SECRET = (process.env.RAZORPAY_KEY_SECRET || '').trim();
 
 if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
   console.error('FATAL: Razorpay credentials missing. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in env vars.');
-  // We continue so logs show debug info, but orders will fail until creds are set.
+  // Keep running so logs show masked values; orders will fail until set correctly.
 }
 
 // initialize client
@@ -93,8 +89,7 @@ app.post("/api/create-order", async (req, res) => {
     });
 
   } catch (err) {
-    console.error("❌ Razorpay error:", err && err.error ? err.error : err);
-    // if Razorpay returns structured error it may be in err.error; send minimal message
+    console.error("❌ Razorpay error:", (err && err.error) ? err.error : err);
     const msg = (err && err.message) ? err.message : 'Unknown error creating order';
     res.status(500).json({ error: msg });
   }
@@ -125,7 +120,6 @@ app.post("/api/verify-payment", (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  // keep this, or change to your frontend domain path if needed
   res.redirect('https://aipune.skta.in');
 });
 
